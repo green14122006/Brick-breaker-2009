@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Brick Breaker Adventure - 5 Levels</title>
+<style>
+body { margin:0; overflow:hidden; background:#111; color:#fff; font-family:Arial; }
+canvas { display:block; }
+#uploadInput { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); display:none; z-index:10; }
+#restartBtn { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); padding:20px 40px; font-size:20px; display:none; cursor:pointer; z-index:10; }
+#message { position:absolute; top:20%; left:50%; transform:translateX(-50%); font-size:30px; display:none; color:#fff; text-align:center; z-index:10; }
+</style>
+</head>
+<body>
+<input type="file" id="uploadInput" accept="image/*">
+<button id="restartBtn">Restart Game</button>
+<div id="message"></div>
+<canvas id="gameCanvas"></canvas>
+<script>
+const canvas=document.getElementById('gameCanvas');
+const ctx=canvas.getContext('2d');
+canvas.width=window.innerWidth;
+canvas.height=window.innerHeight;
+
+// Game variables
+let lives=2, score=0, gameOver=false, gameWon=false;
+let level=1, maxLevel=5;
+let uploadedImage=null;
+
+let paddle={width:150,height:20,x:canvas.width/2-75,y:canvas.height-40};
+let mainBall={x:canvas.width/2, y:canvas.height-60, radius:12, dx:4, dy:-4};
+let balls=[mainBall];
+
+let blocks=[], powerUps=[], activeLasers=[], laserTimer=0, laserDuration=5000, lastLaserTime=0;
+let speedIncreaseTimer=0;
+
+// Paddle controls
+canvas.addEventListener('touchstart', e=>{ paddle.x=e.touches[0].clientX-paddle.width/2; });
+canvas.addEventListener('touchmove', e=>{ paddle.x=e.touches[0].clientX-paddle.width/2; });
+canvas.addEventListener('mousemove', e=>{ paddle.x=e.clientX-paddle.width/2; });
+
+const restartBtn=document.getElementById('restartBtn');
+const uploadInput=document.getElementById('uploadInput');
+const messageDiv=document.getElementById('message');
+
+restartBtn.addEventListener('click',()=>{ location.reload(); });
+uploadInput.addEventListener('change', e=>{
+  const file=e.target.files[0];
+  if(file){
+    const img=new Image();
+    img.onload=()=>{ uploadedImage=img; messageDiv.innerText=''; }
+    img.src=URL.createObjectURL(file);
+    uploadInput.style.display='none';
+  }
+});
+
+// Create blocks per level
+function createBlocks(level){
+  blocks=[];
+  let rows=5+level; // more rows each level
+  let cols=10;
+  for(let c=0;c<cols;c++){
+    for(let r=0;r<rows;r++){
+      let x=c*(canvas.width/cols-5)+5;
+      let y=r*30+50;
+      if(level===2) y+= (c%2)*15;
+      if(level===3) x+= (r%2)*20;
+      if(level===4) { if(Math.abs(c-5)>r) continue; }
+      if(level===5) { if((c+r)%2!==0) continue; }
+      let hardness=level;
+      let hasMonster=Math.random()<0.2;
+      blocks.push({x:x, y:y, width:canvas.width/cols-10, height:25, hardness:hardness, broken:false, hasMonster:hasMonster});
+    }
+  }
+}
+
+// Initial blocks
+createBlocks(level);
+
+// Draw functions
+function drawPaddle(){ ctx.fillStyle='#ff77ff'; ctx.fillRect(paddle.x,paddle.y,paddle.width,paddle.height); }
+function drawBall(b){ ctx.beginPath(); ctx.arc(b.x,b.y,b.radius,0,Math.PI*2); ctx.fillStyle=b.chicken?'brown':'#ff3399'; ctx.fill(); ctx.closePath(); }
+function drawBlocks(){ blocks.forEach(b=>{ if(!b.broken){ ctx.fillStyle=b.hasMonster?'#ff0000':b.hardness===1?'#33ff33':b.hardness===2?'#ffff33':'#ff9933'; ctx.fillRect(b.x,b.y,b.width,b.height); }});}
+function drawPowerUps(){ powerUps.forEach(p=>{ ctx.fillStyle=p.color; ctx.fillRect(p.x,p.y,20,20); }); }
+function drawScoreAndLives(){ ctx.fillStyle='#fff'; ctx.font='20px Arial'; ctx.fillText('Score:'+score,20,30); ctx.fillText('Lives:'+lives,20,60); }
+function drawLasers(){ activeLasers.forEach(l=>{ ctx.fillStyle='red'; ctx.fillRect(l.x,l.y,l.width,l.height); }); }
+
+// Ball movement
+function moveBalls(){
+  balls.forEach((b,i)=>{
+    b.x+=b.dx; b.y+=b.dy;
+    if(b.x+b.radius>canvas.width || b.x-b.radius<0) b.dx=-b.dx;
+    if(b.y-b.radius<0) b.dy=-b.dy;
+
+    // Paddle collision
+    if(b.y+b.radius>paddle.y && b.x>paddle.x && b.x<paddle.x+paddle.width && b.y-b.radius<paddle.y+paddle.height){
+      b.dy=-Math.abs(b.dy); let collide=b.x-(paddle.x+paddle.width/2); b.dx=collide*0.15;
+    }
+
+    // Block collisions
+    blocks.forEach(block=>{
+      if(!block.broken && b.x>block.x && b.x<block.x+block.width && b.y-b.radius<block.y+block.height && b.y+b.radius>block.y){
+        if(b.chicken){ block.broken=true; score+=10; if(block.hasMonster) spawnPowerUp(block.x+block.width/2,block.y); }
+        else { b.dy=-b.dy; block.hardness--; if(block.hardness<=0){ block.broken=true; score+=10; if(block.hasMonster) spawnPowerUp(block.x+block.width/2,block.y); } }
+        // Increase speed slightly per block hit
+        b.dx *= 1.01; b.dy *= 1.01;
+      }
+    });
+
+    // Ball falls
+    if(b.y+b.radius>canvas.height){
+      balls.splice(i,1);
+    }
+  });
+
+  // If no balls left
+  if(balls.length===0){
+    lives--;
+    if(lives>0){ resetMainBall(); }
+    else{ gameOver=true; restartBtn.style.display='block'; }
+  }
+
+  // Gradual speed increase over time
+  speedIncreaseTimer+=16;
+  if(speedIncreaseTimer>10000){ balls.forEach(b=>{ b.dx*=1.05; b.dy*=1.05; }); speedIncreaseTimer=0; }
+}
+
+// Reset main ball
+function resetMainBall(){ mainBall={x:canvas.width/2, y:canvas.height-60, radius:12, dx:4, dy:-4}; balls=[mainBall]; }
+
+// Power-ups
+function spawnPowerUp(x,y){
+  const types=['double','laser','life','chicken']; let type=types[Math.floor(Math.random()*types.length)];
+  let color=type==='double'?'blue':type==='laser'?'red':type==='life'?'green':'brown';
+  powerUps.push({x:x-10,y:y,dy:3,type:type,color:color});
+}
+
+function movePowerUps(){
+  powerUps.forEach((p,i)=>{
+    p.y+=p.dy;
+    if(p.y+20>paddle.y && p.x+20>paddle.x && p.x<paddle.x+paddle.width){ activatePowerUp(p.type); powerUps.splice(i,1); }
+    if(p.y>canvas.height) powerUps.splice(i,1);
+  });
+}
+
+function activatePowerUp(type){
+  if(type==='double'){ balls.push({x:mainBall.x,y:mainBall.y,radius:12,dx:4,dy:-4}); setTimeout(()=>{ if(balls.length>1) balls.splice(1,balls.length-1); },5000); }
+  else if(type==='laser'){ laserTimer=laserDuration; lastLaserTime=Date.now(); }
+  else if(type==='life'){ if(lives<2) lives++; }
+  else if(type==='chicken'){ balls.push({x:mainBall.x,y:mainBall.y,radius:12,dx:4,dy:-4,chicken:true}); setTimeout(()=>{ balls=balls.filter(b=>!b.chicken); },5000); }
+}
+
+// Lasers
+function fireLasers(){
+  if(laserTimer>0){
+    let now=Date.now();
+    if(now-lastLaserTime>200){ activeLasers.push({x:paddle.x+paddle.width/2-5,y:paddle.y-20,width:10,height:20}); lastLaserTime=now; }
+    laserTimer-=16;
+  }
+  activeLasers.forEach((l,i)=>{
+    l.y-=10;
+    blocks.forEach(block=>{
+      if(!block.broken && l.x+l.width>block.x && l.x<block.x+block.width && l.y<block.y+block.height && l.y+l.height>block.y){
+        block.hardness--; if(block.hardness<=0){ block.broken=true; score+=10; if(block.hasMonster) spawnPowerUp(block.x+block.width/2,block.y); }
+        activeLasers.splice(i,1);
+      }
+    });
+    if(l.y<0) activeLasers.splice(i,1);
+  });
+}
+
+// Sunrise
+let sunriseY=canvas.height; let skyGradientHeight=canvas.height;
+function drawSunrise(){
+  let grd=ctx.createLinearGradient(0,0,0,skyGradientHeight); grd.addColorStop(0,'#87CEEB'); grd.addColorStop(1,'#FFDAB9'); ctx.fillStyle=grd; ctx.fillRect(0,0,canvas.width,canvas.height);
+  if(uploadedImage){ ctx.globalAlpha=0.6; ctx.drawImage(uploadedImage,0,0,canvas.width,canvas.height); ctx.globalAlpha=1; }
+  sunriseY-=2; if(sunriseY<canvas.height/2) sunriseY=canvas.height/2;
+  ctx.fillStyle='orange'; ctx.beginPath(); ctx.arc(canvas.width/2,sunriseY,100,0,Math.PI*2); ctx.fill(); ctx.closePath();
+  ctx.fillStyle='#fff'; ctx.font='60px Arial'; ctx.textAlign='center'; ctx.fillText('Congratulations!',canvas.width/2,sunriseY-120);
+  ctx.font='30px Arial'; ctx.fillText('Score: '+score,canvas.width/2,sunriseY-70);
+}
+
+// Draw everything
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if(gameWon && uploadedImage){ drawSunrise(); return; }
+  if(!gameOver){ drawPaddle(); balls.forEach(drawBall); drawBlocks(); drawPowerUps(); drawScoreAndLives(); drawLasers(); }
+}
+
+// Update loop
+function update(){
+  if(!gameOver && !gameWon){ moveBalls(); movePowerUps(); fireLasers(); }
+
+  // Level progression
+  if(blocks.every(b=>b.broken)){
+    if(level<maxLevel){ level++; createBlocks(level); resetMainBall(); messageDiv.innerText='Level '+level; messageDiv.style.display='block'; setTimeout(()=>{ messageDiv.style.display='none'; },2000);}
+    else{ gameWon=true; uploadInput.style.display='block'; messageDiv.innerText='You Won! Upload your photo:'; messageDiv.style.display='block'; }
+  }
+
+  draw();
+  requestAnimationFrame(update);
+}
+
+createBlocks(level);
+update();
+</script>
+</body>
+</html>
